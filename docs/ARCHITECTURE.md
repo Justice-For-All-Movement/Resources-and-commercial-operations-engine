@@ -8,6 +8,8 @@ The library uses an explicit authenticated operator allowlist and scope/purpose 
 
 Command replays check current stored budget membership, exact reservation principal/purpose and any required owner role before returning cached historical acknowledgements. The original command fingerprint is retained; cached data is not an execution permit or fresh provider attestation. Trusted host identity context remains required.
 
+The exported pure reservation transitions also bind the authenticated purpose to the original reservation, including human-owner overage reconciliation. Release, settlement and overage validate complete scoped receipt references with positive safe integer revisions and no unknown properties. These checks validate reference shape and scope; only the durable adapter's configured verifier establishes provider outcomes. Budget-wide expiry remains an operator operation over unattempted holds. Regression tests cover cross-purpose transitions, malformed runtime references, input preservation and valid accounting paths.
+
 Disposable PostgreSQL17 CI tests qualify specific reservation, consumption, lost-acknowledgement and observed-lock cached-authorization scenarios. These are separate from PGlite evidence and do not qualify production identity/receipt services, TLS/failover or deployment. See POSTGRES_TESTS.md.
 
 Immutable settled-cost allocation records exact balanced project/contributor cells with historical source edition/receipt/cost-chain links and atomic audit/outbox in the Resources-owned DB. Accepted PR7 passed32 ordinary and five PostgreSQL17 groups; accepted PR8 added the sixth database-role/RLS boundary group without runtime changes. See ALLOCATIONS.md and POSTGRES_TESTS.md.
@@ -19,3 +21,4 @@ These are private bookkeeping interfaces, not independent receipt/contributor en
 Private accounting statements now join original charge and current effective allocation cells in one locked owning SQL observation, with exact original/latest correction/observed budget references and no new bookkeeping effect. Initial test evidence and remaining qualification: ALLOCATION_STATEMENT.md.
 
 Statement qualification checkpoint: five new restricted-migration groups and all47 ordinary local tests/typecheck/build/registry/strict integration compile pass; installed compiled public exports pass with matching store JS. Initial source CI40748816709 passed45 ordinary and seven EXISTING PostgreSQL17 regressions, not a new statement network scenario. Current-head CI and deployed accounting/authentication remain separate.
+
