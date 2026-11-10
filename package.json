@@ -30,9 +30,10 @@
     "typecheck:postgres": "tsc --noEmit -p tsconfig.postgres.json"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.12",
     "@types/node": "26.6.5",
-    "typescript": "7.0.2",
-    "@electric-sql/pglite": "0.5.12"
+    "@types/pg": "8.23.1",
+    "typescript": "7.0.2"
   },
   "files": [
     "dist",
@@ -40,6 +41,7 @@
     "docs"
   ],
   "dependencies": {
-    "@accountability/evidence": "git+https://github.com/neophilism/Evidence-Storage-and-Provenance-Engine.git#dce7105a70b42d77afe4cd48d34723331447037c"
+    "@accountability/evidence": "git+https://github.com/Justice-For-All-Movement/Evidence-Storage-and-Provenance-Engine.git#dce7105a70b42d77afe4cd48d34723331447037c",
+    "pg": "8.23.1"
   }
 }
