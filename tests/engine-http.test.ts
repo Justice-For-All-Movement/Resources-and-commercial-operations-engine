@@ -96,7 +96,9 @@ test('HTTP end-to-end: budgets, usage, lanes, invoice, sandbox payment, isolatio
       assert.match(csv.type, /text\/csv/); assert.match(Buffer.from(csv.bytes).toString(), /INV-000001/);
       assert.equal((await call(alice, 'GET', `/v1/inspect?ref=${encodeURIComponent(`E13:invoice:${draft.json.id}`)}`)).json.state, 'paid');
       assert.ok((await call(alice, 'GET', '/v1/search?q=Model')).json.length >= 1);
-      assert.ok((await call(alice, 'GET', '/v1/events?limit=1000')).json.some((e: any) => e.type === 'resources.payment_succeeded'));
+      let sawPayment = false; // the feed is gap-safe: it waits for older transactions anywhere on this shared cluster
+      for (let i = 0; i < 600 && !sawPayment; i++) { sawPayment = (await call(alice, 'GET', '/v1/events?limit=1000')).json.some((e: any) => e.type === 'resources.payment_succeeded'); if (!sawPayment) await sleep(50); }
+      assert.ok(sawPayment);
       const audit = (await call(alice, 'GET', '/v1/audit?limit=1000')).json as AuditRecord[];
       assert.ok(audit.length > 15); assert.ok(verifyAuditChain(audit)); assert.doesNotMatch(JSON.stringify(audit), /sandbox-secret|sbx_key_/);
       // upstream change over HTTP

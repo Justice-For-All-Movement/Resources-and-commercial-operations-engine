@@ -8,7 +8,7 @@ import { createHttpHandler, serve } from '../src/service-kit.ts';
 import type { Sql } from '../src/service-kit.ts';
 import { PaymentOutcomeUnknown, SandboxProcessor, SandboxProvider, StripeProvider, createEngine, sandboxHttpApi, sandboxProcessorRoutes, signPayload, stripeFromEnv, verifySignature } from '../src/engine/index.ts';
 import type { PaymentProvider, ResourcesEngine } from '../src/engine/index.ts';
-import { code, ctx, needsPg, sleep, withEngine } from './engine-helpers.ts';
+import { code, ctx, needsPg, sleep, withEngine, settled, track } from './engine-helpers.ts';
 
 const alice = ctx({ actorId: 'alice' }), bob = ctx({ actorId: 'bob' });
 const SECRET = 'sandbox-webhook-secret-for-tests';
@@ -16,7 +16,7 @@ function sandbox(sql: Sql, extra: Record<string, PaymentProvider> = {}, config =
   const processor = new SandboxProcessor({ sql, schema: 'e13_resources', webhookSecret: SECRET });
   const engine = createEngine({ sql, ports: { payments: { sandbox: new SandboxProvider(processor, SECRET), ...extra } }, config: { reconcileAfterSeconds: 0, ...config } });
   processor.setSink(async (raw, headers) => { try { await engine.handleProviderWebhook('sandbox', raw, headers); return 200; } catch { return 400; } });
-  return { engine, processor };
+  return { engine: track(engine, sql), processor };
 }
 async function invoice(engine: ResourcesEngine, key: string, total = 50_000): Promise<string> {
   const d = await engine.createInvoice(alice, { customer: { name: 'Example Customer' }, currency: 'EUR', idempotencyKey: key, lines: [{ description: 'License', quantity: 1, unitPriceMinor: total, workRef: 'E09:work:film' }] });
@@ -49,7 +49,7 @@ test('sandbox: happy path, duplicate webhook, replayed invoice webhook creates n
     await Promise.all([processor.deliver(evt!.id), processor.deliver(evt!.id), processor.deliver(evt!.id)]);
     assert.deepEqual(await counts(sql), before);
     assert.equal((await engine.listRevenue(alice))[0]!.state, 'reconciled');
-    const ev = (await engine.events(alice)).map((e) => e.type);
+    const ev = (await settled(engine, alice)).map((e) => e.type);
     assert.equal(ev.filter((t) => t === 'resources.payment_succeeded').length, 1); assert.equal(ev.filter((t) => t === 'resources.revenue_reconciled').length, 1); assert.equal(ev.filter((t) => t === 'resources.invoice_paid').length, 1);
     const tb = await engine.trialBalance(alice); const bal = (c: string) => tb.accounts.find((a) => a.code === c)!.balance;
     assert.deepEqual([bal('1100'), bal('1200'), bal('4000')], [0, 50_000, -50_000]); assert.ok(tb.balanced);
@@ -98,7 +98,7 @@ test('sandbox: decline, out-of-order webhooks never regress a payment', needsPg,
     const declined = await engine.createPayment(alice, { invoiceId: inv, provider: 'sandbox', method: 'sandbox_decline:insufficient_funds', idempotencyKey: 'p1' });
     assert.equal(declined.state, 'failed'); assert.equal(declined.failureCode, 'insufficient_funds');
     assert.equal((await engine.getInvoice(alice, inv)).state, 'issued'); assert.equal((await counts(sql)).paymentEntries, 0);
-    assert.ok((await engine.events(alice)).some((e) => e.type === 'resources.payment_failed'));
+    assert.ok((await settled(engine, alice)).some((e) => e.type === 'resources.payment_failed'));
     // a new attempt: processing → succeeded at the provider, but the webhooks arrive succeeded first, processing second
     const pay = await engine.createPayment(alice, { invoiceId: inv, provider: 'sandbox', method: 'sandbox_delay', idempotencyKey: 'p2' });
     await sleep(1100); // provider timestamps have one-second resolution

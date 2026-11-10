@@ -4,7 +4,7 @@ import pg from 'pg';
 import { pgSql } from '../src/service-kit.ts';
 import type { BudgetPort } from '../src/service-kit.ts';
 import { createEngine } from '../src/engine/index.ts';
-import { code, ctx, needsPg, sleep, withEngine } from './engine-helpers.ts';
+import { code, ctx, needsPg, sleep, withEngine, settled } from './engine-helpers.ts';
 
 const human = ctx();
 const agent = ctx({ actorId: 'agent-7', kind: 'agent', capabilities: ['resources:spend', 'resources:write', 'resources:read'] });
@@ -33,7 +33,7 @@ test('50 parallel reservations racing a ceiling never oversubscribe (real parall
       const after = (await engine.budgetTree(human))[0]!.children[0]!;
       assert.deepEqual([after.committed, after.reserved, after.available], [10, 10, 0]);
     } finally { await pool.end(); }
-    const exhausted = (await engine.events(human)).filter((e) => e.type === 'resources.budget_exhausted');
+    const exhausted = (await settled(engine, human)).filter((e) => e.type === 'resources.budget_exhausted');
     assert.equal(exhausted.length, 1, 'one exhausted event per budget period, not one per denial');
     const inc = await engine.listIncidents(human, { kind: 'exhausted' });
     assert.equal(inc.length, 1); assert.equal(inc[0]!.count, 50);
@@ -63,7 +63,7 @@ test('idempotent reserve/commit replay, release, validation', needsPg, async () 
     // warnings: 4000 reserved = 40% (none); +2000 = 60% → 5000 bps; each threshold once
     await engine.reserve(human, req('k4', 2500, { unit: 'EUR' }));
     await engine.reserve(human, req('k5', 3500, { unit: 'EUR' }));
-    const warnings = (await engine.events(human)).filter((e) => e.type === 'resources.budget_warning').map((e) => (e.payload as { thresholdBps: number }).thresholdBps);
+    const warnings = (await settled(engine, human)).filter((e) => e.type === 'resources.budget_warning').map((e) => (e.payload as { thresholdBps: number }).thresholdBps);
     assert.deepEqual(warnings, [5000, 9000]);
     await assert.rejects(engine.reserve(human, req('k6', 501, { unit: 'EUR' })), code('budget_exhausted'));
     assert.equal((await engine.reserve(human, req('k6', 500, { unit: 'EUR' }))).reservationId.length, 36, 'a denied key is not poisoned; a later attempt that fits succeeds');
@@ -109,7 +109,7 @@ test('overage: within tolerance commits quietly; beyond tolerance commits, recor
     const tree = (await engine.budgetTree(human))[0]!;
     assert.equal(tree.committed, 260, 'in-flight work beyond tolerance is still accounted'); assert.equal(tree.children[0]!.committed, 260);
     assert.equal((await engine.listIncidents(human, { kind: 'overage' })).length, 1);
-    const types = (await engine.events(human)).map((e) => e.type);
+    const types = (await settled(engine, human)).map((e) => e.type);
     assert.ok(types.includes('resources.budget_exceeded') && types.includes('resources.budget_frozen'));
     await assert.rejects(engine.reserve(human, r({ amount: 1, idempotencyKey: 'o3' })), code('budget_exhausted'));
     await engine.setBudgetState(human, lane.id, 'unfreeze', 'reviewed the overage');

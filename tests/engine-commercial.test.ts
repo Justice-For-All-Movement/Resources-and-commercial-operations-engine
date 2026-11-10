@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEngine } from '../src/engine/index.ts';
-import { code, ctx, memoryObjects, needsPg, withEngine } from './engine-helpers.ts';
+import { code, ctx, memoryObjects, needsPg, withEngine, settled } from './engine-helpers.ts';
 
 const alice = ctx({ actorId: 'alice' }), bob = ctx({ actorId: 'bob' });
 const agent = ctx({ actorId: 'agent-1', kind: 'agent' });
@@ -59,7 +59,7 @@ test('expenses: submitted → approved by a different human → paid; separation
     assert.deepEqual([bal('5000'), bal('5100'), bal('2000'), bal('1000')], [10_000, 2_000, 0, -12_000]); assert.ok(tb.balanced);
     const pnl = await engine.projectPnl(alice);
     assert.equal(pnl.works.find((w) => w.workRef === 'E09:work:film')!.directCostsMinor, 10_000);
-    assert.ok((await engine.events(alice)).some((x) => x.type === 'resources.expense_recorded'));
+    assert.ok((await settled(engine, alice)).some((x) => x.type === 'resources.expense_recorded'));
     assert.equal((await engine.listExpenses(alice, { state: 'paid' })).length, 1);
     assert.equal((await engine.listExpenses(ctx({ projectId: 'proj-2' }))).length, 0);
   });
@@ -166,7 +166,7 @@ test('licenses, revenue import, statements, margins, exports and upstream rights
     const at = ctx({ actorId: 'alice', now: '2030-02-10T00:00:00.000Z' });
     assert.deepEqual((await engine.checkLicenseExpiry(at, { withinDays: 30 })).expiring, [`E13:license:${inbound.id as string}`]);
     assert.deepEqual((await engine.checkLicenseExpiry(at, { withinDays: 30 })).expiring, [], 'notified once');
-    assert.ok((await engine.events(alice)).some((e) => e.type === 'resources.license_expiring'));
+    assert.ok((await settled(engine, alice)).some((e) => e.type === 'resources.license_expiring'));
     // revenue import is idempotent per (source, externalId)
     const rows = [{ externalId: 'st-1', workRef: work, releaseRef: 'E12:release:r1', licenseId: outbound.id as string, periodStart: '2030-01-01', periodEnd: '2030-01-31', grossMinor: 80_000, feesMinor: 8_000, currency: 'EUR' },
       { externalId: 'st-2', workRef: 'E09:work:short', periodStart: '2030-01-01', periodEnd: '2030-01-31', grossMinor: 10_000, currency: 'EUR' }];
@@ -177,7 +177,7 @@ test('licenses, revenue import, statements, margins, exports and upstream rights
     assert.equal((await engine.listRevenue(alice)).length, 3);
     const rec = await engine.reconcileRevenue(alice, first.imported[0]!, { reference: 'SETTLE-77' });
     assert.equal(rec.state, 'reconciled'); assert.equal((await engine.reconcileRevenue(alice, first.imported[0]!, { reference: 'SETTLE-77' })).state, 'reconciled');
-    assert.equal((await engine.events(alice)).filter((e) => e.type === 'resources.revenue_reconciled').length, 1);
+    assert.equal((await settled(engine, alice)).filter((e) => e.type === 'resources.revenue_reconciled').length, 1);
     // margin = revenue − direct costs − allocated usage
     await engine.recordUsage(alice, { kind: 'rendering', provider: 'farm', quantities: { render_seconds: 100 }, cost: { amountMinor: 7_000, currency: 'EUR' }, subject: 'E10:render:r1', workRef: work, idempotencyKey: 'u1' });
     const pnl = await engine.projectPnl(alice);
@@ -200,7 +200,7 @@ test('licenses, revenue import, statements, margins, exports and upstream rights
     const out = await engine.applyUpstreamChange(alice, change);
     assert.deepEqual(out.affected.sort(), [`E13:license:${outbound.id as string}`, `E13:revenue:${first.imported[0]!}`].sort());
     assert.deepEqual((await engine.applyUpstreamChange(alice, change)).affected.sort(), out.affected.sort());
-    assert.equal((await engine.events(alice)).filter((e) => e.type === 'resources.license.blocked').length, 1);
+    assert.equal((await settled(engine, alice)).filter((e) => e.type === 'resources.license.blocked').length, 1);
     const lic = (await engine.listLicenses(alice, { direction: 'outbound' }))[0]!;
     assert.equal(lic.reviewRequired, true); assert.equal((lic.reviewReasons as { cause: string }[])[0]!.cause, 'evt-1');
     assert.equal((await engine.inspect(alice, `E13:license:${outbound.id as string}`))!.blocked, true);

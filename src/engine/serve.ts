@@ -56,7 +56,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<{ clos
     }
   })();
   const port = (server.address() as { port: number }).port;
-  console.log(JSON.stringify({ level: 'info', engine: manifest.id, listening: port, sandboxPayments: processor !== undefined, stripe: payments.stripe?.mode ?? 'unavailable' }));
+  console.log(JSON.stringify({ level: 'info', engine: manifest.id, listening: port, sandboxPayments: processor !== undefined, stripe: env.STRIPE_SECRET_KEY === undefined || env.STRIPE_SECRET_KEY === '' ? 'unavailable' : payments.stripe?.mode }));
   return { port, async close() { stopped = true; await new Promise((r) => server.close(r)); await loop; await pool.end(); } };
 }
 if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) {

@@ -17,7 +17,22 @@ export function ctx(over: Partial<ServiceContext> & { actorId?: string; kind?: '
 }
 export const code = (c: string) => (e: unknown): boolean => { assert.ok(e instanceof DomainError, `expected DomainError ${c}, got ${String(e)}`); assert.equal(e.code, c); return true; };
 export function withEngine(fn: (engine: ResourcesEngine, sql: Sql, url: string) => Promise<void>, deps: (sql: Sql) => Omit<EngineDeps, 'sql'> = () => ({})): Promise<void> {
-  return withDisposableDatabase(pg, ADMIN, async (url, sql) => { await migrate(sql); await fn(createEngine({ sql, ...deps(sql) }), sql, url); });
+  return withDisposableDatabase(pg, ADMIN, async (url, sql) => { await migrate(sql); await fn(track(createEngine({ sql, ...deps(sql) }), sql), sql, url); });
+}
+const sqlOf = new WeakMap<object, Sql>();
+export function track<T extends object>(engine: T, sql: Sql): T { sqlOf.set(engine, sql); return engine; }
+/**
+ * The kit's event feed withholds rows while ANY older transaction is open on the PostgreSQL cluster (gap safety), and this
+ * cluster is shared with other test suites. Wait until the feed has caught up with what this tenant has committed.
+ */
+export async function settled(engine: ResourcesEngine, c: ServiceContext): Promise<Awaited<ReturnType<ResourcesEngine['events']>>> {
+  const sql = sqlOf.get(engine); assert.ok(sql !== undefined, 'engine was not registered with track()');
+  for (let i = 0; ; i++) {
+    const want = Number((await sql.query<{ n: string }>(`select count(*) n from e13_resources._events where tenant_id=$1`, [c.tenantId]))[0]!.n);
+    const got = await engine.events(c, { limit: 1000 });
+    if (got.length >= want || i > 600) return got;
+    await sleep(50);
+  }
 }
 export function memoryObjects(): ObjectStore & { keys(): string[] } {
   const m = new Map<string, Uint8Array>();
