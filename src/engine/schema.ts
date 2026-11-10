@@ -271,7 +271,7 @@ create unique index payments_provider_ref on {s}.payments (provider, provider_re
 create table {s}.provider_events (
   provider text not null, event_id text not null, tenant_id text not null, project_id text not null,
   payment_id uuid, type text not null, event_created_at timestamptz not null, received_at timestamptz not null,
-  payload_sha256 text not null, outcome text not null,
+  payload_sha256 text not null, handling text not null,
   primary key (provider, event_id)
 );
 create table {s}.live_payment_grants (
