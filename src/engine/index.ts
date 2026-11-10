@@ -1,8 +1,7 @@
 // E13 Resources and Commercial Operations — service layer entry point.
-import { DomainError } from '../contracts.ts';
 import type { Json } from '../contracts.ts';
-import { SERVICE_KIT_VERSION, listAudit, parseUref, readEvents, requireCapability, runJobsOnce, runMigrations, standardRoutes, urefMatches } from '../service-kit.ts';
-import type { AuditRecord, BudgetPort, EngineEvent, EngineManifestV1, Inspection, Route, SearchHit, ServiceContext, Sql, StandardEngine, UpstreamChange } from '../service-kit.ts';
+import { SERVICE_KIT_VERSION, listAudit, parseUref, readEvents, requireCapability, runJobsOnce, runMigrations } from '../service-kit.ts';
+import type { AuditRecord, BudgetPort, EngineEvent, EngineManifestV1, Inspection, SearchHit, ServiceContext, Sql, StandardEngine, UpstreamChange } from '../service-kit.ts';
 import { budgetService } from './budgets.ts';
 import { commercialService } from './commercial.ts';
 import { paymentService } from './payflow.ts';
@@ -18,9 +17,8 @@ export type { Budget, BudgetNode, LaneReport, Reservation, ReserveRequest } from
 export const manifest: EngineManifestV1 = {
   id: 'E13', name: 'Resources and Commercial Operations', version: '1.0.0', kit: SERVICE_KIT_VERSION,
   capabilities: ['resources:read', 'resources:write', 'resources:spend', 'resources:approve', 'resources:admin', 'resources:send', 'resources:grant', 'resources:export', 'resources:events'],
-  emits: ['resources.budget_created', 'resources.budget_updated', 'resources.budget_reserved', 'resources.budget_committed', 'resources.budget_released', 'resources.budget_reservation_expired',
-    'resources.budget_warning', 'resources.budget_exhausted', 'resources.budget_exceeded', 'resources.budget_frozen', 'resources.budget_unfrozen', 'resources.budget_closed', 'resources.budget_plan_downgraded',
-    'resources.usage_recorded', 'resources.work_recorded', 'resources.lane_policy_set'],
+  // None of these is consumed by the knowledge (E07) or investigation (E08) engines: money never feeds factual assessment.
+  emits: ['resources.agreement_activated', 'resources.agreement_expired', 'resources.agreement_terminated', 'resources.budget_closed', 'resources.budget_committed', 'resources.budget_created', 'resources.budget_exceeded', 'resources.budget_exhausted', 'resources.budget_frozen', 'resources.budget_plan_downgraded', 'resources.budget_released', 'resources.budget_reservation_expired', 'resources.budget_reserved', 'resources.budget_unfrozen', 'resources.budget_updated', 'resources.budget_warning', 'resources.expense_approved', 'resources.expense_paid', 'resources.expense_recorded', 'resources.expense_rejected', 'resources.invoice_issued', 'resources.invoice_paid', 'resources.invoice_sent', 'resources.invoice_voided', 'resources.lane_policy_set', 'resources.license.blocked', 'resources.license_activated', 'resources.license_expired', 'resources.license_expiring', 'resources.license_review_cleared', 'resources.license_terminated', 'resources.live_payments_granted', 'resources.payment_canceled', 'resources.payment_created', 'resources.payment_failed', 'resources.payment_succeeded', 'resources.payment_uncertain', 'resources.revenue.stale', 'resources.revenue_imported', 'resources.revenue_reconciled', 'resources.statement_issued', 'resources.statement_voided', 'resources.usage_recorded', 'resources.work_recorded'],
   consumes: ['rights_changed', 'permission_withdrawn', 'permission_changed'],
 };
 const t = (c: string) => (r: Record<string, unknown>): string => String(r[c] ?? '');
@@ -83,5 +81,4 @@ export function createEngine(deps: EngineDeps) {
   return { ...standard, ...budgets, ...commercial, ...payments, budgetPort, runJobs: (worker = 'e13-worker', limit = 20): Promise<number> => runJobsOnce(d.sql, S, handlers, { worker, limit }) };
 }
 export type ResourcesEngine = ReturnType<typeof createEngine>;
-export function routes(engine: ResourcesEngine): Route[] { return [...standardRoutes(engine)]; }
-void DomainError; void urefMatches;
+export { routes } from './http.ts';

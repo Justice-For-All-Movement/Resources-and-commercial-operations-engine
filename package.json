@@ -15,6 +15,18 @@
     "./store": {
       "types": "./dist/store.d.ts",
       "default": "./dist/store.js"
+    },
+    "./engine": {
+      "types": "./dist/engine/index.d.ts",
+      "default": "./dist/engine/index.js"
+    },
+    "./serve": {
+      "types": "./dist/engine/serve.d.ts",
+      "default": "./dist/engine/serve.js"
+    },
+    "./service-kit": {
+      "types": "./dist/service-kit.d.ts",
+      "default": "./dist/service-kit.js"
     }
   },
   "engines": {
@@ -27,7 +39,8 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "test:postgres": "npm run typecheck:postgres && node --test integration/postgres-budgets.test.ts",
-    "typecheck:postgres": "tsc --noEmit -p tsconfig.postgres.json"
+    "typecheck:postgres": "tsc --noEmit -p tsconfig.postgres.json",
+    "serve": "node src/engine/serve.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.12",
