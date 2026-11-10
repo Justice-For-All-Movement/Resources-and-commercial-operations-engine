@@ -5,12 +5,16 @@ import { SERVICE_KIT_VERSION, listAudit, parseUref, readEvents, requireCapabilit
 import type { AuditRecord, BudgetPort, EngineEvent, EngineManifestV1, Inspection, Route, SearchHit, ServiceContext, Sql, StandardEngine, UpstreamChange } from '../service-kit.ts';
 import { budgetService } from './budgets.ts';
 import { commercialService } from './commercial.ts';
+import { paymentService } from './payflow.ts';
 import { S, SCHEMA, cap, internals, norm, ref, uuidLike } from './core.ts';
 import type { EngineDeps } from './core.ts';
 import { migrations } from './schema.ts';
 
 export { SCHEMA, migrations };
 export type { EngineConfig, EngineDeps, EnginePorts } from './core.ts';
+export * from './payments.ts';
+export type { Payment } from './payflow.ts';
+export type { Budget, BudgetNode, LaneReport, Reservation, ReserveRequest } from './budgets.ts';
 export const manifest: EngineManifestV1 = {
   id: 'E13', name: 'Resources and Commercial Operations', version: '1.0.0', kit: SERVICE_KIT_VERSION,
   capabilities: ['resources:read', 'resources:write', 'resources:spend', 'resources:approve', 'resources:admin', 'resources:send', 'resources:grant', 'resources:export', 'resources:events'],
@@ -33,6 +37,7 @@ export function createEngine(deps: EngineDeps) {
   const d = internals(deps);
   const budgets = budgetService(d);
   const commercial = commercialService(d);
+  const payments = paymentService(d);
   const budgetPort: BudgetPort = { reserve: (ctx, request) => budgets.reserve(ctx, request), commit: budgets.commit, release: budgets.release };
   const standard: StandardEngine = {
     manifest,
@@ -73,8 +78,9 @@ export function createEngine(deps: EngineDeps) {
     applyUpstreamChange: (ctx: ServiceContext, change: UpstreamChange): Promise<{ affected: string[] }> => commercial.applyUpstreamChange(ctx, change),
     async health(): Promise<{ ok: boolean; detail: Json }> { try { await d.sql.query('select 1'); return { ok: true, detail: { schema: S } }; } catch { return { ok: false, detail: { database: 'unavailable' } }; } },
   };
-  const handlers = { 'resources.expire_reservation': (job: { ctx: ServiceContext; payload: Json }) => budgets.expireReservationJob(job.ctx, (job.payload as { reservationId: string }).reservationId) };
-  return { ...standard, ...budgets, ...commercial, budgetPort, runJobs: (worker = 'e13-worker', limit = 20): Promise<number> => runJobsOnce(d.sql, S, handlers, { worker, limit }) };
+  const handlers = { 'resources.reconcile_payment': (job: { ctx: ServiceContext; payload: Json }) => payments.reconcilePaymentJob({ ...job.ctx, now: new Date().toISOString() }, (job.payload as { paymentId: string }).paymentId),
+    'resources.expire_reservation': (job: { ctx: ServiceContext; payload: Json }) => budgets.expireReservationJob({ ...job.ctx, now: new Date().toISOString() }, (job.payload as { reservationId: string }).reservationId) };
+  return { ...standard, ...budgets, ...commercial, ...payments, budgetPort, runJobs: (worker = 'e13-worker', limit = 20): Promise<number> => runJobsOnce(d.sql, S, handlers, { worker, limit }) };
 }
 export type ResourcesEngine = ReturnType<typeof createEngine>;
 export function routes(engine: ResourcesEngine): Route[] { return [...standardRoutes(engine)]; }
