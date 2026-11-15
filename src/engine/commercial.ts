@@ -368,6 +368,65 @@ export function commercialService(d: Internals) {
         return invoiceWithLines(t.sql, ctx, invoiceId);
       });
     },
+    /**
+     * Credits all or part of an issued, sent or paid invoice (human with resources:approve). Posts a reversing ledger
+     * entry (revenue and tax back; receivable reduced, or cash paid out when a refund made elsewhere is recorded), lowers
+     * the revenue records of the credited lines, and never exceeds what is still uncredited. Nothing is paid by this call.
+     */
+    async issueCreditNote(ctx: ServiceContext, invoiceId: string, input: { reason: string; lines?: { lineNo: number; amountMinor: number }[]; refund?: { method: string; reference?: string; paidOn?: string } | null; idempotencyKey?: string }): Promise<R> {
+      humanWith(ctx, 'approve');
+      const reason = str(input?.reason, 'reason', 500);
+      return d.run(ctx, 'invoice.credit', input?.idempotencyKey, input as unknown as Json, async (t) => {
+        const inv = await one(t.sql, ctx, 'invoices', invoiceId, true);
+        invariant(['issued', 'sent', 'paid'].includes(inv.state as string), 'invalid_state', inv.state === 'draft' ? 'A draft is changed, not credited' : 'A void invoice cannot be credited');
+        const lines = await t.sql.query<R>(`select * from ${S}.invoice_lines where invoice_id=$1 order by line_no`, [inv.id]);
+        const credited = new Map<number, number>();
+        for (const n of await t.sql.query<{ lines: { lineNo: number; amountMinor: number }[] }>(`select lines from ${S}.credit_notes where invoice_id=$1`, [inv.id]))
+          for (const l of n.lines) credited.set(l.lineNo, (credited.get(l.lineNo) ?? 0) + l.amountMinor);
+        const wanted = input.lines === undefined
+          ? lines.map((l) => ({ lineNo: Number(l.line_no), amountMinor: num(l.amount_minor) - (credited.get(Number(l.line_no)) ?? 0) })).filter((l) => l.amountMinor > 0)
+          : input.lines.map((l) => ({ lineNo: Math.trunc(Number(l.lineNo)), amountMinor: Math.trunc(Number(l.amountMinor)) }));
+        invariant(wanted.length > 0, 'invalid_state', 'Nothing is left to credit on this invoice');
+        const out: { lineNo: number; amountMinor: number; taxMinor: number; workRef: string | null }[] = [];
+        for (const w of wanted) {
+          const line = lines.find((l) => Number(l.line_no) === w.lineNo);
+          invariant(line !== undefined, 'invalid_input', `Invoice has no line ${w.lineNo}`);
+          const amount = num(line.amount_minor), left = amount - (credited.get(w.lineNo) ?? 0);
+          invariant(Number.isSafeInteger(w.amountMinor) && w.amountMinor > 0 && w.amountMinor <= left, 'invalid_input', `Line ${w.lineNo}: credit must be between 1 and ${left}`);
+          // Tax is credited in proportion; a full credit of the line returns exactly the line's remaining tax.
+          const lineTax = num(line.tax_minor);
+          const taxSoFar = amount === 0 ? 0 : Math.round(lineTax * (credited.get(w.lineNo) ?? 0) / amount);
+          const tax = w.amountMinor === left ? lineTax - taxSoFar : Math.round(lineTax * w.amountMinor / amount);
+          out.push({ lineNo: w.lineNo, amountMinor: w.amountMinor, taxMinor: tax, workRef: line.work_ref as string | null });
+          credited.set(w.lineNo, (credited.get(w.lineNo) ?? 0) + w.amountMinor);
+        }
+        const subtotal = out.reduce((a, l) => a + l.amountMinor, 0), tax = out.reduce((a, l) => a + l.taxMinor, 0), total = subtotal + tax;
+        invariant(total > 0, 'invalid_input', 'A credit note must credit something');
+        invariant(num(inv.credited_minor) + total <= num(inv.total_minor), 'invalid_input', 'Credits cannot exceed the invoice total');
+        let refund: Record<string, string> | null = null;
+        if (input.refund !== undefined && input.refund !== null) {
+          invariant(num(inv.paid_minor) - num(inv.refunded_minor) >= total, 'invalid_state', 'A refund cannot exceed the money received for this invoice');
+          refund = { method: str(input.refund.method, 'refund.method', 100), reference: optStr(input.refund.reference, 'refund.reference', 300) ?? '', paidOn: optStr(input.refund.paidOn, 'refund.paidOn', 10) ?? ctx.now.slice(0, 10) };
+        }
+        const n = num((await t.sql.query<{ last_number: string }>(`insert into ${S}.credit_note_counters (tenant_id, last_number) values ($1, 1) on conflict (tenant_id) do update set last_number = ${S}.credit_note_counters.last_number + 1 returning last_number`, [ctx.tenantId]))[0]?.last_number);
+        const number = `CN-${String(n).padStart(6, '0')}`;
+        const entry = await postEntry(t, { date: ctx.now.slice(0, 10), currency: inv.currency as string, memo: `Credit note ${number} for invoice ${inv.number as string}`, sourceKind: 'credit_note', sourceId: inv.id as string,
+          lines: [...out.map((l) => ({ account: '4000', debit: l.amountMinor, workRef: l.workRef })), ...(tax > 0 ? [{ account: '2100', debit: tax }] : []), { account: refund === null ? '1100' : '1000', credit: total }] });
+        for (const l of out) await t.sql.query(`update ${S}.revenue_records set gross_minor = greatest(gross_minor - $3, 0), state = case when gross_minor - $3 <= 0 then 'reversed' else state end
+          where tenant_id=$1 and invoice_id=$2 and external_id=$4`, [ctx.tenantId, inv.id, l.amountMinor, `${inv.id as string}:${l.lineNo}`]);
+        const id = randomUUID();
+        await t.sql.query(`insert into ${S}.credit_notes (id, tenant_id, project_id, invoice_id, number, reason, currency, subtotal_minor, tax_minor, total_minor, lines, refund, entry_id, created_by, created_at)
+          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15)`, [id, ...sc(ctx), inv.id, number, reason, inv.currency, subtotal, tax, total, JSON.stringify(out.map(({ workRef: _w, ...l }) => l)), refund === null ? null : JSON.stringify(refund), entry, ctx.actor.id, ctx.now]);
+        await t.sql.query(`update ${S}.invoices set credited_minor = credited_minor + $2, refunded_minor = refunded_minor + $3, updated_at=$4 where id=$1`, [inv.id, total, refund === null ? 0 : total, ctx.now]);
+        t.event('resources.credit_note_issued', ref('credit_note', id), { invoiceId: inv.id as string, number, totalMinor: total, currency: inv.currency as string, refunded: refund !== null });
+        t.audit('credit_note.issued', ref('invoice', inv.id as string), { number, totalMinor: total, reason, refund: refund === null ? null : (refund.method ?? null) });
+        return norm<R>((await t.sql.query(`select * from ${S}.credit_notes where id=$1`, [id]))[0] as R);
+      });
+    },
+    async listCreditNotes(ctx: ServiceContext, filters: { invoiceId?: string } = {}): Promise<R[]> {
+      cap(ctx, 'read');
+      return norms(await d.sql.query(`select * from ${S}.credit_notes where tenant_id=$1 and project_id=$2 and ($3::uuid is null or invoice_id=$3) order by created_at`, [...sc(ctx), filters.invoiceId ?? null]));
+    },
     async getInvoice(ctx: ServiceContext, invoiceId: string): Promise<R> { cap(ctx, 'read'); return invoiceWithLines(d.sql, ctx, invoiceId); },
     listInvoices: list('invoices', 'created_at desc'),
     /** Renders HTML, or PDF through LibreOffice. With an object store the document is stored under `<tenant>/<project>/invoices/…`. */

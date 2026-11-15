@@ -314,3 +314,36 @@ test('engine: missing Stripe credentials are an explicit unavailable state; live
     assert.equal((await engine.listPayments(alice)).filter((x) => x.mode === 'live').length, 0);
   });
 });
+
+test('credit notes: partial then full credit by reversal, refund only up to money received, never above the total; balanced ledger', needsPg, async () => {
+  await withEngine(async (_e, sql) => {
+    const { engine } = sandbox(sql);
+    const d = await engine.createInvoice(alice, { customer: { name: 'Example Customer' }, currency: 'EUR', idempotencyKey: 'cn', lines: [
+      { description: 'Licence', quantity: 1, unitPriceMinor: 100_000, taxRateBps: 2000, taxCode: 'STD', workRef: 'E09:work:film' },
+      { description: 'Subtitles', quantity: 1, unitPriceMinor: 20_000, workRef: 'E09:work:film' }] });
+    await assert.rejects(engine.issueCreditNote(bob, d.id as string, { reason: 'x' }), code('invalid_state'), 'a draft is changed, not credited');
+    await engine.issueInvoice(bob, d.id as string);
+    await assert.rejects(engine.issueCreditNote(ctx({ actorId: 'agent-1', kind: 'agent' }), d.id as string, { reason: 'x' }), code('forbidden'));
+    await assert.rejects(engine.issueCreditNote(bob, d.id as string, { reason: 'x', lines: [{ lineNo: 1, amountMinor: 100_001 }] }), code('invalid_input'));
+    await assert.rejects(engine.issueCreditNote(bob, d.id as string, { reason: 'x', lines: [{ lineNo: 1, amountMinor: 10_000 }], refund: { method: 'bank transfer' } }), code('invalid_state'), 'nothing was received, so nothing can be refunded');
+    // Partial credit of line 1: tax returned in proportion; receivable reduced.
+    const first = await engine.issueCreditNote(bob, d.id as string, { reason: 'Territory dropped', lines: [{ lineNo: 1, amountMinor: 25_000 }], idempotencyKey: 'cn-1' });
+    assert.deepEqual([first.number, first.subtotalMinor, first.taxMinor, first.totalMinor], ['CN-000001', 25_000, 5_000, 30_000]);
+    assert.equal((await engine.issueCreditNote(bob, d.id as string, { reason: 'Territory dropped', lines: [{ lineNo: 1, amountMinor: 25_000 }], idempotencyKey: 'cn-1' })).id, first.id, 'idempotent');
+    let tb = await engine.trialBalance(alice); let bal = (c: string) => tb.accounts.find((a) => a.code === c)?.balance ?? 0;
+    assert.ok(tb.balanced); assert.deepEqual([bal('1100'), bal('4000'), bal('2100')], [110_000, -95_000, -15_000]);
+    // Payment of what is still due, then a full credit of the rest with a refund paid out elsewhere.
+    const pay = await engine.createPayment(alice, { invoiceId: d.id as string, provider: 'sandbox', amountMinor: 110_000, idempotencyKey: 'cn-pay' });
+    assert.equal(pay.state, 'succeeded');
+    const rest = await engine.issueCreditNote(bob, d.id as string, { reason: 'Contract cancelled', refund: { method: 'bank transfer', reference: 'RF-1' }, idempotencyKey: 'cn-2' });
+    assert.deepEqual([rest.number, rest.subtotalMinor, rest.taxMinor, rest.totalMinor], ['CN-000002', 95_000, 15_000, 110_000]);
+    tb = await engine.trialBalance(alice); bal = (c: string) => tb.accounts.find((a) => a.code === c)?.balance ?? 0;
+    assert.ok(tb.balanced); assert.deepEqual([bal('4000'), bal('2100')], [0, 0], 'all revenue and tax credited');
+    await assert.rejects(engine.issueCreditNote(bob, d.id as string, { reason: 'again' }), code('invalid_state'), 'nothing left to credit');
+    const inv = await engine.getInvoice(alice, d.id as string);
+    assert.deepEqual([inv.creditedMinor, inv.refundedMinor], [140_000, 110_000]);
+    assert.ok((await engine.listRevenue(alice, {}) as { invoiceId: string; state: string }[]).filter((r) => r.invoiceId === d.id).every((r) => r.state === 'reversed'));
+    assert.deepEqual((await engine.listCreditNotes(alice, { invoiceId: d.id as string })).map((c) => c.number), ['CN-000001', 'CN-000002']);
+    assert.deepEqual(await engine.listCreditNotes(ctx({ tenantId: 'org-b' }), {}), [], 'tenant isolation');
+  });
+});

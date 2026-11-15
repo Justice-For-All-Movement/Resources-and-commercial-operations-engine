@@ -86,6 +86,8 @@ export function routes(e: ResourcesEngine): Route[] {
     R('POST', '/v1/invoices/:id/issue', (r) => e.issueInvoice(r.ctx, p(r))),
     R('POST', '/v1/invoices/:id/sent', (r) => e.markInvoiceSent(r.ctx, p(r), body(r))),
     R('POST', '/v1/invoices/:id/void', (r) => e.voidInvoice(r.ctx, p(r), body(r).reason)),
+    R('POST', '/v1/invoices/:id/credit-notes', (r) => e.issueCreditNote(r.ctx, p(r), body(r) as never)),
+    R('GET', '/v1/credit-notes', (r) => e.listCreditNotes(r.ctx, { ...(r.query.get('invoiceId') ? { invoiceId: r.query.get('invoiceId') as string } : {}) })),
     R('GET', '/v1/invoices/:id/document', async (r) => { const d = await e.renderInvoice(r.ctx, p(r), (r.query.get('format') ?? 'pdf') as 'pdf' | 'html'); return { bytes: d.bytes, headers: { 'content-type': d.contentType, 'content-disposition': `attachment; filename="invoice.${d.format}"`, 'x-content-sha256': d.sha256 } }; }),
     // revenue, statements, margins, exports
     R('POST', '/v1/revenue/imports', async (r) => created(await e.importRevenue(r.ctx, body(r)))),

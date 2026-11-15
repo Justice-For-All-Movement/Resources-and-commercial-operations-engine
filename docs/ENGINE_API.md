@@ -151,6 +151,7 @@ submitExpense(ctx, { description, category, payee, contributorId?, amountMinor, 
 decideExpense(ctx, id, 'approve'|'reject', note) · markExpensePaid(ctx, id, { reference, paidOn? }) · listExpenses(ctx, filters)
 createInvoice(ctx, { customer: { name, address?, taxId?, email?, country? }, currency, dueOn?, notes?, lines: [{ description, quantity, unitPriceMinor, taxCode?, taxRateBps?, workRef?, releaseRef?, channel?, licenseId? }], idempotencyKey })
 issueInvoice(ctx, id) · markInvoiceSent(ctx, id, { channel, reference? }) · voidInvoice(ctx, id, reason) · getInvoice(ctx, id) · listInvoices(ctx, filters)
+issueCreditNote(ctx, invoiceId, { reason, lines?: [{ lineNo, amountMinor }], refund?: { method, reference?, paidOn? }, idempotencyKey? }) · listCreditNotes(ctx, { invoiceId? })   // approve, human
 renderInvoice(ctx, id, 'pdf'|'html'): Promise<{ format, contentType, bytes, sha256, key }>
 importRevenue(ctx, { source, channel, rows: [{ externalId, workRef?, releaseRef?, licenseId?, periodStart, periodEnd, occurredOn?, grossMinor, feesMinor?, currency }], idempotencyKey? }): Promise<{ imported, duplicates }>
 reconcileRevenue(ctx, id, { reference, receivedOn? }) · clearRevenueReview(ctx, id, reason) · listRevenue(ctx, filters) · revenueByWork(ctx, { from?, to? })
@@ -295,9 +296,9 @@ reported as skipped. No test contacts a third party; the "Stripe" server in the 
 
 ## Not implemented
 
-- Currency conversion, tax calculation rules (tax codes/rates are caller-supplied data), credit notes and refunds (a paid
-  invoice cannot be voided; a refund must be handled outside and booked with a manual journal entry), partial-payment
-  dunning, editing a draft invoice (create a new draft instead).
+- Currency conversion, tax calculation rules (tax codes/rates are caller-supplied data), partial-payment dunning, editing a
+  draft invoice (create a new draft instead). Refunds are recorded on a credit note when paid out elsewhere; the engine
+  does not pay them through a provider.
 - Outbound payouts through a provider (expenses and statements are settled outside and recorded).
 - Stripe-hosted invoices, Stripe refunds/disputes events (received, stored and ignored as `ignored_type`).
 - A scheduler for `checkLicenseExpiry` and for agreement/license auto-expiry (host must call them).
@@ -316,3 +317,12 @@ reported as skipped. No test contacts a third party; the "Stripe" server in the 
 - No independent security review. Not deployed or checked in a hosted environment.
 - The kit event feed withholds events while any older transaction is open on the same PostgreSQL cluster; consumers on a
   busy shared cluster see events late (never out of order).
+
+## Credit notes
+
+`issueCreditNote` (human, `resources:approve`; `POST /v1/invoices/:id/credit-notes`, `GET /v1/credit-notes`) credits all
+remaining amounts of an issued, sent or paid invoice, or chosen amounts per line. Tax is returned in proportion (a line
+credited in full returns exactly its remaining tax). It posts one balanced reversing entry (debit 4000 revenue and 2100
+tax; credit 1100 receivable, or 1000 cash when `refund` records money paid back elsewhere, which is allowed only up to
+the money received), lowers the revenue records of the credited lines (reversed at zero), numbers the note per
+organization (`CN-000001`) and emits `resources.credit_note_issued`. Credits never exceed the invoice total.

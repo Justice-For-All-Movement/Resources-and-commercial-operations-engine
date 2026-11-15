@@ -297,4 +297,16 @@ create table {s}.sandbox_events (
 export const migrations: readonly Migration[] = [
   { id: '001_core', sql: core },
   { id: '002_commercial', sql: commercial },
+  { id: '003_credit_notes', sql: `
+alter table {s}.invoices add column if not exists credited_minor bigint not null default 0;
+alter table {s}.invoices add column if not exists refunded_minor bigint not null default 0;
+create table {s}.credit_notes (
+  id uuid primary key, tenant_id text not null, project_id text not null, invoice_id uuid not null references {s}.invoices(id),
+  number text not null, reason text not null, currency text not null,
+  subtotal_minor bigint not null check (subtotal_minor >= 0), tax_minor bigint not null check (tax_minor >= 0), total_minor bigint not null check (total_minor > 0),
+  lines jsonb not null, refund jsonb, entry_id uuid not null, created_by text not null, created_at timestamptz not null,
+  unique (tenant_id, number)
+);
+create table {s}.credit_note_counters (tenant_id text primary key, last_number bigint not null);
+` },
 ];
