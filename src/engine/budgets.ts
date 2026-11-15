@@ -140,11 +140,23 @@ export function budgetService(d: Internals) {
     }
   }
 
+  /**
+   * Only the actor that made a reservation (same id and kind) settles it. Anyone else with `resources:spend` in the project
+   * could otherwise commit an inflated amount against it (freezing the budget) or release it while the reserver's paid
+   * effect is in flight, leaving that effect unaccounted. `resources:admin`, named exactly, is the explicit override.
+   */
+  function assertReserver(ctx: ServiceContext, r: Record<string, unknown>): void {
+    if (r.actor_id === ctx.actor.id && r.actor_kind === ctx.actor.kind) return;
+    let admin = false;
+    try { cap(ctx, 'admin'); admin = true; } catch { admin = false; }
+    invariant(admin, 'forbidden', 'This reservation was made by another actor; only that actor or a resources administrator can settle it');
+  }
   async function commitIn(t: Tx, reservationId: string, amount: number, detail: Json): Promise<void> {
     const { ctx, sql } = t;
     const r = (await sql.query<Record<string, unknown> & { state: string; amount: string; actual: string | null; budget_ids: string[]; period_keys: string[] }>(
       `select * from ${S}.reservations where id=$1 and tenant_id=$2 and project_id=$3 for update`, [id(reservationId), ...scope(ctx)]))[0];
     invariant(r !== undefined, 'not_found', 'Not found');
+    assertReserver(ctx, r);
     if (r.state === 'committed') { invariant(num(r.actual) === amount, 'invalid_state', 'Reservation was already committed with a different amount'); return; }
     invariant(r.state !== 'released', 'invalid_state', 'Reservation was released');
     const reservedAmount = num(r.amount); const over = amount - reservedAmount; const late = r.state === 'expired';
@@ -193,6 +205,7 @@ export function budgetService(d: Internals) {
       await d.run(ctx, 'release', undefined, null, async (t) => {
         const r = (await t.sql.query<Record<string, unknown> & { state: string; amount: string; budget_ids: string[]; period_keys: string[] }>(`select * from ${S}.reservations where id=$1 and tenant_id=$2 and project_id=$3 for update`, [id(reservationId), ...scope(ctx)]))[0];
         invariant(r !== undefined, 'not_found', 'Not found');
+        assertReserver(t.ctx, r);
         if (r.state === 'released' || r.state === 'expired') return;
         invariant(r.state === 'held', 'invalid_state', 'A committed reservation cannot be released');
         await t.sql.query(`select id from ${S}.budgets where id = any($1::uuid[]) order by id for update`, [r.budget_ids]);

@@ -45,7 +45,7 @@ Tool dependencies: LibreOffice (`soffice`) for invoice PDFs; without it `renderI
 | `resources:write` | record usage/work, drafts (contributors, agreements, licenses, invoices), submit expenses, import/reconcile revenue, reconcile payments, `applyUpstreamChange`, license expiry check |
 | `resources:spend` (sensitive) | `reserve`, `commit`, `release`, `reserveWithPlans`, `expireReservations`, mark an expense paid |
 | `resources:approve` (sensitive, **human only**) | freeze/unfreeze/close budgets, fallback plans, expense decisions, issue/void invoices, agreement and license status, statements, manual journal entries and reversals, clearing reviews |
-| `resources:admin` (sensitive) | budget definitions and assignments, rate card, lane policy, ledger accounts |
+| `resources:admin` (sensitive) | budget definitions and assignments, rate card, lane policy, ledger accounts; committing or releasing another actor's reservation |
 | `resources:send` (sensitive) | mark invoice sent, request a payment through a provider |
 | `resources:grant` (sensitive, **human only**) | live-payment grants |
 | `resources:export` (sensitive) | `exportData` |
@@ -79,6 +79,10 @@ setBudgetState(ctx, id, 'freeze' | 'unfreeze' | 'close', reason): Promise<Budget
 assignBudget(ctx, budgetId, actorId, assigned = true): Promise<void>
 getBudget(ctx, id) · budgetTree(ctx): Promise<BudgetNode[]> · burn(ctx, { budgetId?, unit?, bucket?, from?, to? }) · listIncidents(ctx, { kind?, open?, limit? })
 ```
+
+`commit` and `release` are accepted only from the actor that made the reservation (same actor id and kind) or from a
+caller holding `resources:admin`; anyone else gets `forbidden` and nothing changes. A reservation nobody settles still
+expires (its capacity returns) after the reservation TTL.
 
 Semantics (graceful exhaustion):
 
