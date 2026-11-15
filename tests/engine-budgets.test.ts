@@ -164,3 +164,28 @@ test('monthly budgets reset by period; previously authorized smaller plan is use
     assert.equal(node.periodKey, '2031-02'); assert.equal(node.reserved, 60); assert.equal(node.forecast!.method, 'linear_projection');
   });
 });
+
+test('only the reserving actor (or resources:admin) commits or releases a reservation', needsPg, async () => {
+  await withEngine(async (engine) => {
+    await engine.createBudget(human, { name: 'Project tokens', level: 'project', unit: 'tokens_out', ceiling: 1000 });
+    await engine.createBudget(human, { name: 'Agent 7', level: 'agent', unit: 'tokens_out', ceiling: 100, actorId: 'agent-7' });
+    await engine.createBudget(human, { name: 'Agent 8', level: 'agent', unit: 'tokens_out', ceiling: 100, actorId: 'agent-8' });
+    const other = ctx({ actorId: 'agent-8', kind: 'agent', capabilities: ['resources:spend', 'resources:write', 'resources:read'] });
+    const sameIdOtherKind = ctx({ actorId: 'agent-7', kind: 'service', capabilities: ['resources:spend'] });
+    const admin = ctx({ actorId: 'ops-1', kind: 'human', capabilities: ['resources:spend', 'resources:admin'] });
+    const a = await engine.reserve(agent, req('own-1', 10));
+    for (const c of [other, sameIdOtherKind]) {
+      await assert.rejects(engine.commit(c, a.reservationId, { amount: 90 }), code('forbidden'));
+      await assert.rejects(engine.release(c, a.reservationId, 'not mine'), code('forbidden'));
+    }
+    await engine.commit(agent, a.reservationId, { amount: 10 });
+    const b = await engine.reserve(agent, req('own-2', 5));
+    await assert.rejects(engine.release(other, b.reservationId, 'not mine'), code('forbidden'));
+    await engine.release(admin, b.reservationId, 'administrator cleanup');
+    await assert.rejects(engine.commit(agent, b.reservationId, { amount: 5 }), code('invalid_state'));
+    const c = await engine.reserve(agent, req('own-3', 7));
+    await engine.commit(admin, c.reservationId, { amount: 7 });
+    const node = (await engine.budgetTree(human)).find((n) => n.name === 'Agent 7')!;
+    assert.deepEqual([node.committed, node.reserved], [17, 0], 'refused attempts changed nothing');
+  });
+});
